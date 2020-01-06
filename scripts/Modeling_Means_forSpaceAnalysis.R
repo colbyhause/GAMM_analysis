@@ -1,17 +1,35 @@
-# Trying out the "means" model in 2 ways:
-# 1. running a GAM on each transect for each parameter, then using those values to bin and get mean 
-# 2. just getting means form raw data
 
 library(tidyverse)
-#install.packages("Distance")
+library(mgcv)
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+library(ClusterR)
+library(clValid)
+library(NbClust)
 library(Distance)
 
+#FOR SPATIAL DATA:
+library(naniar)
+library(tidyverse)
+library(udunits2)
+library(fpc)
+library(vegan)
+library(corrplot)
+library(mclust)
+library(tmap)
+library(viridis)
+library(sf)
 
+#1.VERSION1----
+#  This means model is using the RAW data, not the predicted data from the GAMM
+# The ISSUE with this method is that some of the bins means are calculated from just one number, as some of the bin only have data from one of the transects. I would not trust to use this raw version as the final analysis. 
 
-#1. Means model using coeff of variation:-----
-# read in csv with all flame data
+# read in csv with all flame data----
 flame_all <- read_csv("data/Data_alltransects_withRKM_FIXED_120919.csv") 
 flame_all <- flame_all[, -c(1:2)] # remove first 2 cols, done need them
+# Remove the one weird temperature outlier:
+flame_all <- flame_all %>% 
+  filter(temp >=2)
 
 # Divide each reach into bins .05 km bins (50 m)
 # Have to have your column for distance be named "distance" for code to work
@@ -21,182 +39,301 @@ colnames(flame_all)[1] <- "distance"
 # create dataframe with the bins
 binned_flame <- create.bins(data = flame_all, cutpoints = seq(from = 0, to = max(flame_all$distance +1), by = 0.05)) # the +1 is to prevent the code from cutting of the distance prematurely 
 
-# Code for checking to see which ones the code was dropping before I added the +1 to it:
-#determine_dropped_data <- flame_all$transect_ID %in% binned_flame$transect_ID
-#removed_in_binning <- flame_all[determine_dropped_data == F, ]
+# also binning the data another way (I've seen Gabe use this) where you determine how the data is cut up based on the size bin you want:
+max(binned_flame$distance)
+146/.05
+dat <- data.frame(binned_flame, cut(binned_flame$distance, breaks = 146/.05, labels = F))
+colnames(dat)[18] <- "cuts"
 
-# look to see if there are enough detections in all the bins, was working and now isnt for some reason:
-#ggplot(data = binned_flame) +
-  #hist(aes(x = binned_flame$distbegin)) #, breaks = seq(from = 0, to = max(rkm), by = 0.1))
-#binned_flame$distbegin <- as.numeric(binned_flame$distbegin)
+# One day turn this into ONE for loop:
 
-# calculate the mean for each transect within a bin, and then the global mean for that bin 
-test<- binned_flame %>% 
-filter(distbegin == 0.0) %>% 
-  group_by(transect) %>% 
-  mutate(mean_chl_transect = mean(CHL)) %>% 
-  group_by(distbegin)  %>% 
-  mutate(grand_mean = mean(unique(mean_chl_transect)))
-
-test2<-binned_flame %>% 
-  filter(distbegin == 0.15)
-# need to turn this into a loop, make an example dataframe:
-# 
-#### WRITING LOOP FOR THIS:--------------------------------------------------
-ex_df <- binned_flame %>% 
-  filter(distbegin == 0.0 | distbegin == 0.05 | distbegin == 0.10 | distbegin == 0.15 | distbegin == 0.2| distbegin == 0.25| distbegin == 0.3 | distbegin == 0.65) # | distbegin == 0.35| distbegin == 0.4)# |distbegin == 0.45 | distbegin == 0.5| distbegin == 0.55| distbegin ==0.6)#| distbegin ==0.65)
-
-data <- ex_df
-param_list <- c("temp", "spCond", "pH","ODO", "turb", "fDOM", "CHL", "NO3")
-param_mean_transect_df <- NULL
-
-# Run first Loop:
- for (i in param_list) {
-  print(i)
-  param_df <- data[ , c(i, "distbegin", "transect")]
-  param_df$newcolumn1 <- 0
-  param_df$newcolumn2 <- 0
-  start_bins <-  unique(param_df$distbegin)
-  for (j in start_bins) {
-    print(j)
-    param_mean_transect <- param_df
-    bin_df <- subset(param_mean_transect, param_mean_transect$distbegin == j)
-    colnames(bin_df)[4] <- paste0("mean", colnames(param_df)[1], "byTransect")
-    transect_list <- unique(param_mean_transect$transect)
-    for (k in transect_list) {
-      print(k) 
-      param_mean_transect_temporary <- subset(bin_df, bin_df$transect == k)
-      print("here")
-      param_mean_transect_temporary[4] <- mean(param_mean_transect_temporary[, 1])
-      print("here2")
-      param_mean_transect_df <- rbind(param_mean_transect_df, param_mean_transect_temporary)
-    }
-    return(param_mean_transect_df)
-  }
- }
-
-# Use param_mean_transect_df from first loop in second loop:
-for (j in start_bins ) {
-    bin_df_globalmean_temporary <- subset(param_mean_transect_df, 
-                                          param_mean_transect_df$distbegin == j)
-    bin_df_globalmean_temporary[5] <- mean(unique(bin_df_globalmean_temporary[, 4]))
-    colnames(bin_df_globalmean_temporary)[5] <- paste0(colnames(param_df)[1], "_global_mean")
-    globalmean_df <- rbind(globalmean_df, data.frame(bin_df_globalmean_temporary))
+# CHL loop----
+chl_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("CHL", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_chl_transect = mean(CHL)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_chl_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  chl_df  <- rbind(chl_df, dat_Tcounts)
 }
-globalmean_df <-NULL
-
-##################
 
 
-length(param_mean_transect_df$distbegin == 0.0)
-rm(globalmean_df)
-    #return((param_mean_transect_df))
-    print(param_mean_transect_df)
-    for (j in start_bins) {
-      bin_df_globalmean_temporary <- subset(param_mean_transect_df, 
-                                            param_mean_transect_df$distbegin == j)
-      bin_df_globalmean <- bin_df_globalmean_temporary
-      bin_df_globalmean[5] <-"test"
-      #bin_df_globalmean[5] <- mean(bin_df_globalmean_temporary[, 4])
-      bin_df_globalmean_df <- rbind(bin_df_globalmean_df, data.frame(bin_df_globalmean))
-    }
-  }
-  return((bin_df_globalmean))
+write_csv(chl_df, "data_output/CHL_raw_means_for_clustering.csv")
+chl_df <- read_csv("data_output/CHL_raw_means_for_clustering.csv")
+
+# Turb loop----
+turb_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("turb", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_turb_transect = mean(turb)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_turb_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  turb_df  <- rbind(turb_df, dat_Tcounts)
 }
-  #}
-  return((bin_df_globalmean))
- }
-    
-param_mean_transect_df <- NULL
-globalmean_df <- NULL
-rm(bin_df_globalmean_temporary)
-rm(bin_df_globalmean)
-rm(bin_df)
 
-test<- ex_df %>% 
-  filter(distbegin == 0.2)
+write_csv(turb_df, "data_output/turb_raw_means_for_clustering.csv")
+turb_df<- read_csv("data_output/turb_raw_means_for_clustering.csv")
 
-  param_mean_transect_df <- rbind(param_mean_transect_df, data.frame(param_mean_transect_temporary))
-      #write_csv(x = param_mean_transect_df, path = paste0(param, "_means_for_clustering.csv"))
-    }
-  }
- }
-  for (j in start_bins) {
-    bin_df_globalmean <- subset(param_mean_transect_df, param_mean_transect_df$distbegin == j)
-    param_mean_transect_df[5] <- mean(unique(param_mean_transect_df[, 4]))
-    param_mean_transect_df_final <- rbind(param_mean_transect_df_final, 
-                                          data.frame(param_mean_transect_df))
-    
-    }
-  }
-  return(param_mean_transect_df_final)
- }
+# NO3 loop-----
+NO3_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("NO3", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_NO3_transect = mean(NO3)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_NO3_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  NO3_df  <- rbind(NO3_df, dat_Tcounts)
+}
 
-  #write_csv(x = param_mean_transect_df, path = paste0(param, "_means_for_clustering.csv"))
- 
-mean(unique(param_mean_transect_df$newcolumn1))
-param_mean_transect_df <- NULL
-param_mean_transect_df_final <- NULL
+write_csv(NO3_df, "data_output/NO3_raw_means_for_clustering.csv")
+NO3_df <- read_csv("data_output/NO3_raw_means_for_clustering.csv")
+
+#pH loop----
+pH_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("pH", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_pH_transect = mean(pH)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_pH_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  pH_df  <- rbind(pH_df, dat_Tcounts)
+}
+
+write_csv(pH_df, "data_output/pH_raw_means_for_clustering.csv")
+pH_df<- read_csv("data_output/pH_raw_means_for_clustering.csv")
+#DO loop----
+DO_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("ODO", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_DO_transect = mean(ODO)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_DO_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  DO_df  <- rbind(DO_df, dat_Tcounts)
+}
+
+write_csv(DO_df, "data_output/DO_raw_means_for_clustering.csv")
+DO_df<- read_csv("data_output/DO_raw_means_for_clustering.csv")
+
+# spCond loop----
+spCond_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("spCond", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_spCond_transect = mean(spCond)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_spCond_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  spCond_df  <- rbind(spCond_df, dat_Tcounts)
+}
+
+write_csv(spCond_df, "data_output/spCond_raw_means_for_clustering.csv")
+spCond_df <- read_csv("data_output/spCond_raw_means_for_clustering.csv")
 
 
-param_mean_transect <- subset(param_mean_transect, param_mean_transect$transect == "T1_")
+#fDOM loop----
+fDOM_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("fDOM", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_fDOM_transect = mean(fDOM)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_fDOM_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  fDOM_df  <- rbind(fDOM_df, dat_Tcounts)
+}
 
-param_mean_transect$newcolumn1 <- mean(param_mean_transect[, 1])
-test <- param_mean_transect 
-test1<- test %>% 
-  mutate(paste0("mean_", colnames(param_df)[1], "by_transect") == "test")
+write_csv(fDOM_df, "data_output/fDOM_raw_means_for_clustering.csv")
+fDOM_df <- read_csv( "data_output/fDOM_raw_means_for_clustering.csv")
 
-colnames(param_mean_transect)[4] <-  paste0("mean_", colnames(param_df)[1], "by_transect")
-  mutate("mean_", param_df$1, "by_transect")
+# temp loop----
+temp_df <- NULL
+for (i in 1:max(dat$cuts)) {
+  dat_df<- dat[ , c("temp", "distance", "lat", "lon", "reach", "transect", "transect_ID", "distbegin", "distend", "cuts")] %>% 
+    filter(cuts == i) %>% 
+    group_by(transect) %>% 
+    mutate(mean_temp_transect = mean(temp)) %>% 
+    group_by(cuts) %>% 
+    mutate(grand_mean = mean(unique(mean_temp_transect)))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  temp_df  <- rbind(temp_df, dat_Tcounts)
+}
 
-   df<-ex_df %>% 
-     filter(distbegin == i) %>% 
-     group_by(transect) 
- for (j in param_list) {
-  print(j)
-   df2 <- df
+write_csv(temp_df, "data_output/temp_raw_means_for_clustering.csv")
+temp_df<- read_csv("data_output/temp_raw_means_for_clustering.csv")
 
+# Make one dataframe of the grand mean of the parameters:
+grandMean_allParams <- data.frame(cbind(temp.grand.mean = temp_df$grand_mean,spCond.grand.mean = spCond_df$grand_mean, pH.grand.mean = pH_df$grand_mean, ODO.grand.mean = DO_df$grand_mean, turb.grand.mean = turb_df$grand_mean, fDOM.grand.mean = fDOM_df$grand_mean, CHL.grand.mean = chl_df$grand_mean, NO3.grand.mean = NO3_df$grand_mean), chl_df[, c(2:10, 13)]) # the last part is just binding in the rest of the data that is the same for all params, so I just pulled it from the chl dataframe 
+
+# write to a csv:----
+write_csv(grandMean_allParams, "data_output/grandMeans.fromRaw.allParams.forClustering.csv")
+
+# figure out where there is only 1 transect in the calculation:
+NAmeans <- temp_df %>% 
+  filter(tran_counts == 1)
+NAmeans<- NAmeans[, c(1, 6:13)]
   
-# Means model using GAMMs
-# read in csv with all flame data
-flame_all <- read_csv("data/Data_alltransects_withRKM.csv") 
-flame_all <- flame_all[, -1]
-# Remove the one weird temperature outlier:
-flame_all <- flame_all %>% 
-  filter(temp >=2)
+
+histo<- hist(NAmeans$cuts)
+histo$counts
+length(unique(NAmeans$cuts))
+
+# VERSION 2 AND 3:----
+# This means model uses the values predicted by the GAMM in Version2 in the script Modeling_VariationforTimeAnalysis.R
+# The same code is used for version 2 and 3, the only difference is the dataframe that is used at the start,
+
+# Read in df of predicted values estimated by GAMM:
+
+#This is the data for version3, made in #2a. of script predict.values.from.GAMMS.R. This dataframe has one predicted measurement for each 0.05 increment rkm:
+
+dat_predV3 <- read_csv("data_output/Predicted_from_GAMM/GAMMPredictedValues_AllParams.csv") 
+# Dataset for version 2: # this is the dataframe is made in #2b of script predict.values.from.GAMMS.R. It has one predicted measurement for each actual rkm
+#Note: the n in the dataframe is the number of coords that went into the calculate of the average coordinate ( see predict.values.from.GAMMS.R for more detailed explaination):
+
+dat_predV2 <- read_csv("data_output/Predicted_from_GAMM/GAMMPredictedValues_AllParams_across_actualRKMs_withGeomeans.csv")
 
 
-# CHL data
-chl <- flame_all[ , c("CHL", "rkm", "transect")]
-chl$transect <- factor(chl$transect)
+# choose which version you are doing:
+# dat_pred <- dat_predV3 # assign either the dataset from V3 or V2 here
+dat_pred <- dat_predV2 # assign either the dataset from V3 or V2 here 
+rkm_list <- unique(dat_pred$rkm)
 
-# Turb data
-turb <- flame_all[ , c("turb", "rkm", "transect")]
-turb$transect <- factor(turb$transect)
+# CHL loop----
+chl_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("CHL.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(CHL.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  chl_pred_df  <- rbind(chl_pred_df, dat_Tcounts)
+}
 
-# DO data
-DO <- flame_all[ , c("ODO", "rkm", "transect")]
-DO$transect <- factor(DO$transect)
+# Turb loop----
+turb_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("turb.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(turb.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  turb_pred_df  <- rbind(turb_pred_df, dat_Tcounts)
+}
 
-# fDOM data
-fdom <- flame_all[ , c("fDOM", "rkm", "transect")]
-fdom$transect <- factor(fdom$transect)
+#NO3 loop----
+NO3_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("NO3.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(NO3.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  NO3_pred_df  <- rbind(NO3_pred_df, dat_Tcounts)
+}
 
-# sp Cond data
-spCond <- flame_all[ , c("spCond", "rkm", "transect")]
-spCond$transect <- factor(spCond$transect)
+# pH loop----
+pH_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("pH.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(pH.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  pH_pred_df  <- rbind(pH_pred_df, dat_Tcounts)
+}
 
-#NO3 data
-NO3 <- flame_all[ , c("NO3", "rkm", "transect")]
-NO3$transect <- factor(NO3$transect)
+# DO loop----
+DO_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("DO.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(DO.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  DO_pred_df  <- rbind(DO_pred_df, dat_Tcounts)
+}
 
-# Temp data
-temp <- flame_all[ , c("temp", "rkm", "transect")]
-temp$transect <- factor(temp$transect)
+#SpCond loop----
+spCond_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("spCond.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(spCond.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  spCond_pred_df  <- rbind(spCond_pred_df, dat_Tcounts)
+}
+
+#fDOM loop----
+fDOM_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("fDOM.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(fDOM.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  fDOM_pred_df  <- rbind(fDOM_pred_df, dat_Tcounts)
+}
+
+#Temp loop----
+temp_pred_df <- NULL
+for (i in rkm_list) {
+  dat_df<- dat_pred[ , c("temp.predicted", "transect", "rkm")] %>% 
+    filter(rkm == i) %>% 
+    group_by(rkm) %>% 
+    mutate(mean = mean(temp.predicted))
+  dat_Tcounts <- dat_df %>% 
+    mutate(tran_counts = length(unique(transect)))
+  temp_pred_df  <- rbind(temp_pred_df, dat_Tcounts)
+}
+
+# WRITE TO FILES:
+# Combine to make one file:----
+# If used Version 3 data:
+#CV_allParams_predicted_0.05km <- data.frame(cbind(CHL.CV.predicted = chl_pred_df$cv,turb.CV.predicted =  turb_pred_df$cv, NO3.CV.predicted = NO3_pred_df$cv, spCond.CV.predicted = spCond_pred_df$cv, temp.CV.predicted = temp_pred_df$cv, pH.CV.predicted = pH_pred_df$cv, fDOM.CV.predicted = fDOM_pred_df$cv, DO.CV.predicted = DO_pred_df$cv, chl_pred_df[, 2:5])) 
+
+#write to a csv:
+#write_csv(CV_allParams_predicted_0.05km, "data_output/CV/CV_fromPredicted.05km_AllParams.csv") ### this is for version 3
+
+# If used version2 data:
+mean_allParams_predicted_V2<- data.frame(cbind(CHL.mean.predicted = chl_pred_df$mean,turb.mean.predicted =  turb_pred_df$mean, NO3.mean.predicted = NO3_pred_df$mean, spCond.mean.predicted = spCond_pred_df$mean, temp.mean.predicted = temp_pred_df$mean, pH.mean.predicted = pH_pred_df$mean, fDOM.mean.predicted = fDOM_pred_df$mean, DO.mean.predicted = DO_pred_df$mean, chl_pred_df[,5], dat_predV2[, c(1, 11:13)]))
 
 
-#pH data
-pH <- flame_all[ , c("pH", "rkm", "transect")]
-pH$transect <- factor(pH$transect)
+#write to a csv:
+#write_csv(CV_allParams_predicted_0.05km, "data_output/CV/CV_fromPredicted.05km_AllParams.csv") ### csv for version 3
 
-data_for_each_param <- flame_all[, c(1, 12, 13, 15)]
+write_csv(mean_allParams_predicted_V2, "data_output/Mean/Mean_fromPredicted_AllParams_across_actualRKMS.csv") ### csv for version 2
+# checking trancounts:
+which(mean_allParams_predicted_V2$tran_counts == 1) # should not have any 1s, only 2s and 3s
+
+# WORKFLOW: now feed this data output into the Mean section of the ClusterCode_SpaceAndTimeModeling.R script 
+
