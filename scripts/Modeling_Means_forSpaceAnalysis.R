@@ -383,6 +383,38 @@ write_csv(cut_geomean_df, "data_output/geomean_of_bins_.1_NoSingleRecords")
 read_csv("data_output/geomean_of_bins_.1_NoSingleRecords")
 
 # NOw need to incorporate geomeans into data
+grandMean_allParams_trunc_cuts <- grandMean_allParams_trunc[, c(1:8, 17)]
+test_cuts <- grandMean_allParams_trunc_cuts %>% 
+  filter(cuts == 4 |cuts == 5| cuts == 6)
+unique(test_cuts$spCond.grand.mean)
+
+transectEdited_grandMean_allParams_trunc <- grandMean_allParams_trunc
+transectEdited_grandMean_allParams_trunc[grep("T1_", transectEdited_grandMean_allParams_trunc$transect), ][, "transect"] <- 1
+transectEdited_grandMean_allParams_trunc[grep("T2_", transectEdited_grandMean_allParams_trunc$transect), ][, "transect"] <- 2
+transectEdited_grandMean_allParams_trunc[grep("T3_", transectEdited_grandMean_allParams_trunc$transect), ][, "transect"] <- 3
+transectEdited_grandMean_allParams_trunc$transect <- as.numeric(transectEdited_grandMean_allParams_trunc$transect)
+
+# really i am just trying to avoid writing a forloop
+
+cuts_mean_params <- aggregate(x = transectEdited_grandMean_allParams_trunc[, c(1:9, 13)], by = list(grandMean_allParams_trunc_cuts$cuts),FUN =  mean)
+
+# bind the cuts_mean_params with geomean database
+grandMean_allParams_geomeans_per.1bin <- cbind(cuts_mean_params, cut_geomean_df)
+colnames(grandMean_allParams_geomeans_per.1bin)[1] <- ".1_bins"
+# now have to make transect categorical again:
+grandMean_allParams_geomeans_per.1bin$transect <- as.character(grandMean_allParams_geomeans_per.1bin$transect)
+
+# plot to see if this looks fine:
+plot(y = grandMean_allParams_geomeans_per.1bin$temp.grand.mean, x = grandMean_allParams_geomeans_per.1bin$distance, col = grandMean_allParams_geomeans_per.1bin$transect, cex = .3) 
+class(grandMean_allParams_geomeans_per.1bin$transect)
+
+ggplot(grandMean_allParams_geomeans_per.1bin, aes(y = grandMean_allParams_geomeans_per.1bin$temp.grand.mean,  x= grandMean_allParams_geomeans_per.1bin$distance)) +
+geom_point(aes(color = grandMean_allParams_geomeans_per.1bin$transect)) 
+class(grandMean_allParams_geomeans_per.1bin$temp.grand.mean)
+class(grandMean_allParams_geomeans_per.1bin$distance)
+class(grandMean_allParams_geomeans_per.1bin$transect)
+
+# left off here- cant figure out why the plot above os notnplotting correctly 
 
 
 # VERSION 2 AND 3:----
